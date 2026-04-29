@@ -220,6 +220,60 @@ These fields apply in addition to `entity`, and optional `switch` and `actions`,
 | `status_map`     | **Required** | A mapping of status codes to their corresponding states.                                        |
 | `status_pattern` | **Required** | A regex pattern to extract schedule details from the `entity` state. Named groups are required. |
 
+#### Petkit weekly planner notes
+
+The [`homeassistant_petkit`](https://github.com/Jezza34000/homeassistant_petkit) integration can also be used in `device.type: custom` mode.
+
+For Petkit-style weekly plans, the card can read the structured weekly payload directly instead of relying only on the flat `status_pattern` state parsing.
+
+Additional custom-device options supported for this mode:
+
+| Name                         | Required | Description                                                                 |
+| ---------------------------- | -------- | --------------------------------------------------------------------------- |
+| `weekly_attribute`           | No       | Attribute that contains the weekly plan list. Defaults to `feed_daily_list`. |
+| `weekly_edit_service`        | No       | Full Home Assistant service name used for weekly write-back, e.g. `petkit.set_feeding_schedule`. |
+| `weekly_device_id_attribute` | No       | Attribute containing the backend device id. Defaults to `device_id`.        |
+
+Current Petkit-compatible interaction model:
+
+- weekly planner tabs stay visible in the main view
+- row overflow menu is used for `Edit` / `Remove`
+- editing is limited to existing entries (`time` and `amount`)
+- weekly write-back sends the full `feed_daily_list` payload back through the configured service
+- item-level `suspended` is **not** written back because Petkit rejects `feed_daily_list[].items[].suspended`
+
+Example configuration:
+
+```yaml
+type: custom:dispenser-schedule-card
+editable: toggle
+device:
+  type: custom
+  entity: sensor.xing_xing_wei_shi_qi_raw_distribution_data
+  weekly_attribute: feed_daily_list
+  weekly_edit_service: petkit.set_feeding_schedule
+  weekly_device_id_attribute: device_id
+  max_entries: 15
+  min_amount: 1
+  max_amount: 20
+  step_amount: 1
+  status_map:
+    - 0 -> pending
+    - 1 -> dispensed_schedule
+    - 2 -> dispensed_remote
+    - 3 -> dispensed_local
+    - 6 -> unknown
+    - 7 -> cancelled
+    - 8 -> skipped
+    - 9 -> error
+  status_pattern: >-
+    (?<id>[0-9]{1,2}),(?<hour>[0-9]{1,2}),(?<minute>[0-9]{1,2}),(?<amount>[0-9]{1,3}),(?<status>[0-9]{1}),?
+  alternate_unit:
+    unit_of_measurement: 克
+    conversion_factor: 1
+    approximate: true
+```
+
 #### Complete Device Configuration Example
 
 Here's a complete example of custom device parsing configuration:
