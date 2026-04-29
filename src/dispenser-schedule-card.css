@@ -245,7 +245,7 @@ ha-input {
   --state-icon-color: var(--disabled-text-color);
 }
 
-/* Weekly planner — day switcher, summary, and dual actions. */
+/* Weekly planner — day switcher and daily summary. */
 .weekly-day-switcher {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -370,18 +370,4 @@ ha-input {
 .weekly-summary__total {
   color: var(--primary-text-color);
   font-weight: 500;
-}
-
-.weekly-actions {
-  display: flex;
-  flex-direction: row;
-  gap: 8px;
-  padding-top: 12px;
-  margin-top: 4px;
-  border-top: 1px solid var(--divider-color);
-}
-
-.weekly-actions ha-button {
-  flex: 1 1 0;
-  min-width: 0;
 }

@@ -19,10 +19,7 @@
     "empty_day": "這天沒有排程",
     "today": "今天",
     "feedings_one": "1 次餵食",
-    "feedings_other": "{n} 次餵食",
-    "edit_plan": "編輯計畫",
-    "disable_plan": "停用計畫",
-    "disable_plan_unavailable": "尚未支援停用計畫"
+    "feedings_other": "{n} 次餵食"
   },
   "entry_field": {
     "quantity_n": "數量 {n}",

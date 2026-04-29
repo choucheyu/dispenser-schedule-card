@@ -19,10 +19,7 @@
     "empty_day": "No schedule for this day",
     "today": "Today",
     "feedings_one": "1 feeding",
-    "feedings_other": "{n} feedings",
-    "edit_plan": "Edit plan",
-    "disable_plan": "Disable plan",
-    "disable_plan_unavailable": "Disabling plans is not yet supported"
+    "feedings_other": "{n} feedings"
   },
   "entry_field": {
     "quantity_n": "Amount {n}",

@@ -779,41 +779,6 @@ class DispenserScheduleCard extends LitElement {
     </div>`;
   }
 
-  /**
-   * Bottom edit / disable button shell. The primary button reuses the
-   * existing in-card edit toggle when the device supports any edit action;
-   * the secondary button is intentionally a non-destructive placeholder
-   * because there is no safe per-plan disable semantics yet for Petkit-
-   * style backends.
-   */
-  renderWeeklyActions() {
-    const caps = this._device.capabilities;
-    const canEdit =
-      caps.canEditEntries || caps.canAddEntries || caps.canRemoveEntries;
-    const editLabel = localize("ui.edit_plan") ?? localize("ui.edit") ?? "Edit";
-    const disableLabel =
-      localize("ui.disable_plan") ?? localize("ui.disable") ?? "Disable";
-
-    return html`<div class="weekly-actions">
-      <ha-button
-        class="weekly-actions__primary"
-        appearance="filled"
-        ?disabled=${!canEdit}
-        @click=${this.handleEditToggle}
-      >
-        ${editLabel}
-      </ha-button>
-      <ha-button
-        class="weekly-actions__secondary"
-        appearance="plain"
-        disabled
-        title=${localize("ui.disable_plan_unavailable") ?? ""}
-      >
-        ${disableLabel}
-      </ha-button>
-    </div>`;
-  }
-
   renderContent() {
     const primaryEntityId = this.getPrimaryEntityId();
 
@@ -973,7 +938,6 @@ class DispenserScheduleCard extends LitElement {
             ? html`${this.renderWeekdaySwitcher()}${this.renderDailySummary()}`
             : nothing}
           ${this.renderContent()}
-          ${weeklyPlannerActive ? this.renderWeeklyActions() : nothing}
         </div>
       </ha-card>
     `;
