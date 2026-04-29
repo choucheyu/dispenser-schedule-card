@@ -244,3 +244,144 @@ ha-input {
   --paper-item-icon-color: var(--disabled-text-color);
   --state-icon-color: var(--disabled-text-color);
 }
+
+/* Weekly planner — day switcher, summary, and dual actions. */
+.weekly-day-switcher {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px 0 12px;
+  margin-top: 4px;
+}
+
+.weekly-day {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 2px 14px;
+  background: transparent;
+  border: none;
+  border-radius: 12px;
+  color: var(--primary-text-color);
+  cursor: pointer;
+  font: inherit;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.weekly-day:hover:not(.weekly-day--selected) {
+  background-color: var(--secondary-background-color);
+}
+
+.weekly-day:focus-visible {
+  outline: 2px solid var(--primary-color);
+  outline-offset: -2px;
+}
+
+.weekly-day__label {
+  font-size: var(--ha-font-size-s, 12px);
+  line-height: 1;
+  color: var(--secondary-text-color);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.weekly-day__total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  font-size: var(--ha-font-size-m, 14px);
+  font-weight: 500;
+  line-height: 1.1;
+  color: var(--primary-text-color);
+}
+
+.weekly-day__dash {
+  color: var(--disabled-text-color);
+  font-weight: 400;
+}
+
+.weekly-day--empty .weekly-day__total {
+  color: var(--disabled-text-color);
+}
+
+.weekly-day--today .weekly-day__label {
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+.weekly-day--selected {
+  background-color: var(--secondary-background-color);
+}
+
+.weekly-day--selected .weekly-day__label {
+  color: var(--primary-color);
+  font-weight: 600;
+}
+
+.weekly-day--selected .weekly-day__total {
+  color: var(--primary-text-color);
+}
+
+/* Pointer triangle below the active tab */
+.weekly-day--selected::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid var(--primary-color);
+}
+
+.weekly-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 4px 8px;
+}
+
+.weekly-summary__title {
+  font-size: var(--ha-font-size-l, 16px);
+  font-weight: 600;
+  color: var(--primary-text-color);
+}
+
+.weekly-summary__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: var(--ha-font-size-s, 12px);
+  color: var(--secondary-text-color);
+}
+
+.weekly-summary__divider {
+  color: var(--disabled-text-color);
+}
+
+.weekly-summary__total {
+  color: var(--primary-text-color);
+  font-weight: 500;
+}
+
+.weekly-actions {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  padding-top: 12px;
+  margin-top: 4px;
+  border-top: 1px solid var(--divider-color);
+}
+
+.weekly-actions ha-button {
+  flex: 1 1 0;
+  min-width: 0;
+}

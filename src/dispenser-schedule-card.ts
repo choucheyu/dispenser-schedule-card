@@ -18,9 +18,11 @@ import {
   formatWeekday,
   formatWeekdays,
   getFirstWeekdayOfLocale,
+  getTodayWeekday,
   weekdaysInLocaleOrder,
 } from "./types/weekday";
 import {
+  appliesOnWeekday,
   canonicalizeWeekdays,
   getEditableWeekdays,
   hasSelectedWeekdays,
@@ -58,12 +60,14 @@ class DispenserScheduleCard extends LitElement {
   declare _schedules: Array<ScheduleEntry>;
   declare _editSchedule: EditScheduleEntry | null;
   declare _device: Device;
+  declare _selectedWeekday: Weekday | null;
 
   constructor() {
     super();
     this._isReady = false;
     this._schedules = [];
     this._editSchedule = null;
+    this._selectedWeekday = null;
   }
 
   static get properties() {
@@ -73,6 +77,7 @@ class DispenserScheduleCard extends LitElement {
       _isReady: { state: true },
       _schedules: { state: true },
       _editSchedule: { state: true },
+      _selectedWeekday: { state: true },
     };
   }
 
@@ -165,7 +170,42 @@ class DispenserScheduleCard extends LitElement {
     if (this._isEditing || !caps.hasWeeklySchedule) {
       return this._schedules;
     }
-    return this._device.filterScheduleForToday(this._schedules);
+    const day = this.getEffectiveSelectedWeekday();
+    return this._schedules.filter((entry) =>
+      appliesOnWeekday(entry.weekdays, day)
+    );
+  }
+
+  getEffectiveSelectedWeekday(): Weekday {
+    return (
+      this._selectedWeekday ?? getTodayWeekday(this._hass.config.time_zone)
+    );
+  }
+
+  handleSelectWeekday(weekday: Weekday) {
+    this._selectedWeekday = weekday;
+  }
+
+  /**
+   * Sum of enabled-entry amounts that apply on `weekday`. Used for both the
+   * day-tab subtotal and the daily summary header. Disabled (suspended)
+   * entries are excluded so the count reflects what will actually dispense.
+   */
+  computeDayTotalAmount(weekday: Weekday): number {
+    return this._schedules.reduce((sum, entry) => {
+      if (entry.status === EntryStatus.DISABLED) return sum;
+      if (!appliesOnWeekday(entry.weekdays, weekday)) return sum;
+      const amount = entry.values[0];
+      return sum + (Number.isFinite(amount) ? amount : 0);
+    }, 0);
+  }
+
+  computeDayFeedingCount(weekday: Weekday): number {
+    return this._schedules.reduce((count, entry) => {
+      if (entry.status === EntryStatus.DISABLED) return count;
+      if (!appliesOnWeekday(entry.weekdays, weekday)) return count;
+      return count + 1;
+    }, 0);
   }
 
   renderTimeString(entry: ScheduleEntry): string {
@@ -660,6 +700,120 @@ class DispenserScheduleCard extends LitElement {
     return sameTime && sameWeekdays;
   }
 
+  /**
+   * Renders the 7-day switcher bar shown above the schedule list when the
+   * device exposes a weekly schedule. Each tab shows the day's short label
+   * and the total enabled portion count for that day; the active tab gets
+   * a triangle pointer and accent color, mirroring the Petkit app layout.
+   */
+  renderWeekdaySwitcher() {
+    if (!this._hass) return nothing;
+    const lang = this._hass.locale.language;
+    const first = getFirstWeekdayOfLocale(
+      lang,
+      this._hass.locale.first_weekday
+    );
+    const ordered = weekdaysInLocaleOrder(first);
+    const selected = this.getEffectiveSelectedWeekday();
+    const today = getTodayWeekday(this._hass.config.time_zone);
+
+    return html`<div class="weekly-day-switcher" role="tablist">
+      ${ordered.map((wd) => {
+        const total = this.computeDayTotalAmount(wd);
+        const isSelected = wd === selected;
+        const isToday = wd === today;
+        const cls = [
+          "weekly-day",
+          isSelected ? "weekly-day--selected" : "",
+          isToday ? "weekly-day--today" : "",
+          total === 0 ? "weekly-day--empty" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return html`<button
+          class=${cls}
+          role="tab"
+          aria-selected=${isSelected ? "true" : "false"}
+          @click=${() => this.handleSelectWeekday(wd)}
+        >
+          <span class="weekly-day__label"
+            >${formatWeekday(wd, lang, "short")}</span
+          >
+          <span class="weekly-day__total"
+            >${total > 0
+              ? html`${total}`
+              : html`<span class="weekly-day__dash">·</span>`}</span
+          >
+        </button>`;
+      })}
+    </div>`;
+  }
+
+  renderDailySummary() {
+    if (!this._hass) return nothing;
+    const day = this.getEffectiveSelectedWeekday();
+    const lang = this._hass.locale.language;
+    const today = getTodayWeekday(this._hass.config.time_zone);
+    const dayLabel = formatWeekday(day, lang, "long");
+    const heading =
+      day === today
+        ? `${localize("ui.today") ?? dayLabel} · ${dayLabel}`
+        : dayLabel;
+
+    const count = this.computeDayFeedingCount(day);
+    const total = this.computeDayTotalAmount(day);
+    const countLabel =
+      count === 1
+        ? (localize("ui.feedings_one") ?? "1 feeding")
+        : (localize("ui.feedings_other", "{n}", String(count)) ??
+          `${count} feedings`);
+    const totalUnit = localize("ui.portions_other") ?? "portions";
+
+    return html`<div class="weekly-summary">
+      <div class="weekly-summary__title">${heading}</div>
+      <div class="weekly-summary__stats">
+        <span class="weekly-summary__count">${countLabel}</span>
+        <span class="weekly-summary__divider">·</span>
+        <span class="weekly-summary__total">${total} ${totalUnit}</span>
+      </div>
+    </div>`;
+  }
+
+  /**
+   * Bottom edit / disable button shell. The primary button reuses the
+   * existing in-card edit toggle when the device supports any edit action;
+   * the secondary button is intentionally a non-destructive placeholder
+   * because there is no safe per-plan disable semantics yet for Petkit-
+   * style backends.
+   */
+  renderWeeklyActions() {
+    const caps = this._device.capabilities;
+    const canEdit =
+      caps.canEditEntries || caps.canAddEntries || caps.canRemoveEntries;
+    const editLabel = localize("ui.edit_plan") ?? localize("ui.edit") ?? "Edit";
+    const disableLabel =
+      localize("ui.disable_plan") ?? localize("ui.disable") ?? "Disable";
+
+    return html`<div class="weekly-actions">
+      <ha-button
+        class="weekly-actions__primary"
+        appearance="filled"
+        ?disabled=${!canEdit}
+        @click=${this.handleEditToggle}
+      >
+        ${editLabel}
+      </ha-button>
+      <ha-button
+        class="weekly-actions__secondary"
+        appearance="plain"
+        disabled
+        title=${localize("ui.disable_plan_unavailable") ?? ""}
+      >
+        ${disableLabel}
+      </ha-button>
+    </div>`;
+  }
+
   renderContent() {
     const primaryEntityId = this.getPrimaryEntityId();
 
@@ -766,15 +920,23 @@ class DispenserScheduleCard extends LitElement {
     if (listRows.length === 0) {
       const available = this._device.isAvailable();
       const caps = this._device.capabilities;
-      const todayFilteredOut =
+      const weeklyFilteredOut =
         caps.hasWeeklySchedule &&
         !this._isEditing &&
         this._schedules.length > 0;
       let label: string;
       if (!available) {
         label = this._hass.localize("state.default.unavailable");
-      } else if (todayFilteredOut) {
-        label = localize("ui.empty_today") ?? localize("ui.empty") ?? "";
+      } else if (weeklyFilteredOut) {
+        const today = getTodayWeekday(this._hass.config.time_zone);
+        const day = this.getEffectiveSelectedWeekday();
+        label =
+          day === today
+            ? (localize("ui.empty_today") ?? localize("ui.empty") ?? "")
+            : (localize("ui.empty_day") ??
+              localize("ui.empty_today") ??
+              localize("ui.empty") ??
+              "");
       } else {
         label = localize("ui.empty") ?? "";
       }
@@ -798,11 +960,20 @@ class DispenserScheduleCard extends LitElement {
     if (!this._hass) {
       return nothing;
     }
+
+    const caps = this._device?.capabilities;
+    const weeklyPlannerActive =
+      !!caps?.hasWeeklySchedule && !this._editSchedule && !this._isEditing;
+
     return html`
       <ha-card>
         <div class="card-content">
           ${this._editSchedule ? nothing : this.renderSwitch()}
+          ${weeklyPlannerActive
+            ? html`${this.renderWeekdaySwitcher()}${this.renderDailySummary()}`
+            : nothing}
           ${this.renderContent()}
+          ${weeklyPlannerActive ? this.renderWeeklyActions() : nothing}
         </div>
       </ha-card>
     `;
