@@ -484,8 +484,7 @@ class DispenserScheduleCard extends LitElement {
     const nameTitle = this.scheduleEntryNameTitle(entry);
     const style = this.getRowStyle(color);
     const caps = this._device.capabilities;
-    const hasOverflowActions =
-      caps.canEditEntries || caps.canRemoveEntries || caps.hasEntryToggle;
+    const hasOverflowActions = caps.canEditEntries || caps.canRemoveEntries;
     const rowClass = [
       "timeline",
       displayStatus,
@@ -500,6 +499,30 @@ class DispenserScheduleCard extends LitElement {
         displayStatus === EntryStatus.NONE
           ? undefined
           : (localize(`status.${label}`) ?? label);
+      const weeklyOverflowMenu =
+        caps.hasWeeklySchedule && hasOverflowActions
+          ? html`<ha-dropdown
+              class="edit-menu"
+              @wa-select=${(ev: CustomEvent) =>
+                this._handleRowMenuAction(entry, ev)}
+            >
+              <ha-icon-button slot="trigger">
+                <ha-icon icon="mdi:dots-vertical"></ha-icon>
+              </ha-icon-button>
+              ${caps.canEditEntries
+                ? html`<ha-dropdown-item value="edit" class="edit-entry">
+                    ${localize("ui.edit")}
+                    <ha-icon slot="icon" icon="mdi:pencil"></ha-icon>
+                  </ha-dropdown-item>`
+                : nothing}
+              ${caps.canRemoveEntries
+                ? html`<ha-dropdown-item value="remove" class="remove-entry">
+                    ${localize("ui.delete")}
+                    <ha-icon slot="icon" icon="mdi:delete"></ha-icon>
+                  </ha-dropdown-item>`
+                : nothing}
+            </ha-dropdown>`
+          : nothing;
 
       return renderEntityRow({
         className: rowClass,
@@ -509,7 +532,9 @@ class DispenserScheduleCard extends LitElement {
         nameTitle,
         secondaryContent: rowSecondary,
         style,
-        valueContent: this.renderCompactEntryValues(entry.values),
+        valueContent: html`${this.renderCompactEntryValues(
+          entry.values
+        )}${weeklyOverflowMenu}`,
       });
     }
 
@@ -544,19 +569,6 @@ class DispenserScheduleCard extends LitElement {
               ? html`<ha-dropdown-item value="remove" class="remove-entry">
                   ${localize("ui.delete")}
                   <ha-icon slot="icon" icon="mdi:delete"></ha-icon>
-                </ha-dropdown-item>`
-              : nothing}
-            ${caps.hasEntryToggle
-              ? html`<ha-dropdown-item value="toggle" class="toggle-entry">
-                  ${displayStatus === EntryStatus.DISABLED
-                    ? localize("ui.enable")
-                    : localize("ui.disable")}
-                  <ha-icon
-                    slot="icon"
-                    icon="${displayStatus === EntryStatus.DISABLED
-                      ? "mdi:toggle-switch"
-                      : "mdi:toggle-switch-off"}"
-                  ></ha-icon>
                 </ha-dropdown-item>`
               : nothing}
           </ha-dropdown>`
@@ -625,38 +637,43 @@ class DispenserScheduleCard extends LitElement {
               (ev.target as HTMLInputElement).checked
             )}
         ></ha-switch>`
-      : nothing;
+      : this._config.editable === "toggle"
+        ? html`<ha-switch
+            .checked=${this._isEditing}
+            @change=${() => this.handleEditToggle()}
+          ></ha-switch>`
+        : nothing;
 
-    return renderEntityRow({
-      className: "header-row timeline",
-      icon: displayInfo.icon ?? "mdi:calendar-badge",
-      iconColor,
-      nameContent: rowTitle,
-      nameTitle: rowTitle,
-      style: this.getRowStyle(iconColor),
-      valueContent: html`
-        <div class="dispenser-entity-row__header-controls">
-          ${this._config.editable === "toggle"
-            ? html`<ha-button
-                @click=${this.handleEditToggle}
-                class="edit-button"
-                appearance="plain"
-              >
-                ${this._isEditing ? localize("ui.done") : localize("ui.edit")}
-              </ha-button>`
-            : nothing}
-          ${this._isEditing
-            ? html`<ha-icon-button
-                ?disabled=${isAddDisabled || !caps.canAddEntries}
-                @click=${this.handleAddEntry}
-                class="add-entry"
-              >
-                <ha-icon icon="mdi:clock-plus"></ha-icon>
-              </ha-icon-button>`
-            : switchElement}
-        </div>
-      `,
-    });
+    return html`<div class="custom-header-row">
+      <div class="custom-header-row__left">
+        <ha-icon
+          class="custom-header-row__icon"
+          icon=${displayInfo.icon ?? "mdi:calendar-badge"}
+          style=${iconColor ? `color:${iconColor};` : ""}
+        ></ha-icon>
+        <span class="custom-header-row__title">${rowTitle}</span>
+      </div>
+      <div class="custom-header-row__right">
+        ${this._config.editable === "toggle"
+          ? html`<button
+              type="button"
+              class="header-text-button"
+              @click=${this.handleEditToggle}
+            >
+              ${this._isEditing ? localize("ui.done") : localize("ui.edit")}
+            </button>`
+          : nothing}
+        ${this._isEditing
+          ? html`<ha-icon-button
+              ?disabled=${isAddDisabled || !caps.canAddEntries}
+              @click=${this.handleAddEntry}
+              class="add-entry"
+            >
+              <ha-icon icon="mdi:clock-plus"></ha-icon>
+            </ha-icon-button>`
+          : switchElement}
+      </div>
+    </div>`;
   }
 
   isSaveDisabled(entry: EditScheduleEntry) {
@@ -931,6 +948,14 @@ class DispenserScheduleCard extends LitElement {
     }
 
     const caps = this._device?.capabilities;
+    if (
+      caps?.hasWeeklySchedule &&
+      this._config?.editable === "always" &&
+      !this._editSchedule &&
+      this._isEditing
+    ) {
+      this._isEditing = false;
+    }
     const weeklyPlannerActive =
       !!caps?.hasWeeklySchedule && !this._editSchedule && !this._isEditing;
 
@@ -961,11 +986,9 @@ class DispenserScheduleCard extends LitElement {
 
     let editable = config.editable ?? "toggle";
 
-    if (editable === "always") {
-      this._isEditing = true;
-    } else if (editable === "never") {
+    if (editable === "never") {
       this._isEditing = false;
-    } else if (editable !== "toggle") {
+    } else if (editable !== "always" && editable !== "toggle") {
       throw new Error(`Invalid editable option: ${editable}`);
     }
 
@@ -977,10 +1000,13 @@ class DispenserScheduleCard extends LitElement {
       caps.canEditEntries ||
       caps.canRemoveEntries ||
       caps.hasEntryToggle;
+    const forceEditing = config.editable === "always";
 
     if (!hasAnyEditAction) {
-      editable = "never";
-      this._isEditing = false;
+      editable = forceEditing ? "always" : "never";
+      this._isEditing = forceEditing;
+    } else if (editable === "always") {
+      this._isEditing = !caps.hasWeeklySchedule;
     }
 
     this._config = { ...config, editable };

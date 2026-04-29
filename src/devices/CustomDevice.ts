@@ -345,12 +345,13 @@ export default class CustomDevice extends Device<CustomDeviceConfig> {
     const weekly = this.getWeeklyEntries();
     const hasWeeklySchedule = weekly !== null;
     if (hasWeeklySchedule) {
+      const canWriteWeekly = !!this.deviceConfig.weekly_edit_service;
       return {
-        hasEntryToggle: false,
+        hasEntryToggle: canWriteWeekly,
         hasGlobalToggle: !!this.deviceConfig.switch,
         canAddEntries: false,
-        canRemoveEntries: false,
-        canEditEntries: !!this.deviceConfig.weekly_edit_service,
+        canRemoveEntries: canWriteWeekly,
+        canEditEntries: canWriteWeekly,
         canEditWeekdays: false,
         maxEntries: this.deviceConfig.max_entries,
         hasWeeklySchedule: true,
@@ -529,7 +530,7 @@ export default class CustomDevice extends Device<CustomDeviceConfig> {
    * All other days, items, repeats and suspended flags round-trip
    * unchanged so the broader weekly plan stays intact.
    */
-  private async editWeeklyEntry(entry: EditScheduleEntry): Promise<void> {
+  private getWeeklyWriteContext() {
     const serviceStr = this.deviceConfig.weekly_edit_service;
     if (!serviceStr) {
       throw new Error("weekly_edit_service is not configured");
@@ -538,13 +539,6 @@ export default class CustomDevice extends Device<CustomDeviceConfig> {
     if (!domain || !action) {
       throw new Error(
         `Invalid weekly_edit_service "${serviceStr}"; expected "domain.action"`
-      );
-    }
-
-    const decoded = entry.key === null ? null : decodeWeeklyKey(entry.key);
-    if (!decoded || decoded.itemIndex === null) {
-      throw new Error(
-        "Cannot edit this weekly entry: source structure is not items-shaped"
       );
     }
 
@@ -574,6 +568,93 @@ export default class CustomDevice extends Device<CustomDeviceConfig> {
       );
     }
 
+    return { domain, action, rawList, deviceId };
+  }
+
+  private serializeWeeklyFeedDailyList(
+    rawList: unknown[],
+    mutateItem?: (
+      item: Record<string, unknown>,
+      ctx: { dayIndex: number; itemIndex: number }
+    ) => Record<string, unknown> | null,
+    mutateDay?: (
+      day: Record<string, unknown>,
+      ctx: { dayIndex: number }
+    ) => Record<string, unknown>
+  ) {
+    return rawList.map((rawDay, dIdx) => {
+      const sourceDay = (rawDay ?? {}) as Record<string, unknown>;
+      const day = mutateDay
+        ? mutateDay(sourceDay, { dayIndex: dIdx })
+        : sourceDay;
+      const dayItems = Array.isArray(day.items) ? day.items : [];
+      const items = dayItems
+        .map((rawItem, iIdx) => {
+          const item = (rawItem ?? {}) as Record<string, unknown>;
+          if (!mutateItem) return item;
+          return mutateItem(item, { dayIndex: dIdx, itemIndex: iIdx });
+        })
+        .filter((item): item is Record<string, unknown> => item !== null)
+        .map((item) => {
+          const baseAmount =
+            typeof item.amount === "number"
+              ? item.amount
+              : parseInt(String(item.amount ?? 0), 10) || 0;
+          const baseAmount1 =
+            typeof item.amount1 === "number"
+              ? item.amount1
+              : parseInt(String(item.amount1 ?? 0), 10) || 0;
+          const baseAmount2 =
+            typeof item.amount2 === "number"
+              ? item.amount2
+              : parseInt(String(item.amount2 ?? 0), 10) || 0;
+          const baseTime =
+            typeof item.time === "number"
+              ? item.time
+              : parseInt(String(item.time ?? 0), 10) || 0;
+          const baseName =
+            typeof item.name === "string" ? item.name : String(item.name ?? "");
+          return {
+            time: baseTime,
+            name: baseName,
+            amount: baseAmount,
+            amount1: baseAmount1,
+            amount2: baseAmount2,
+          };
+        });
+
+      const repeats = day.repeats;
+      const suspended =
+        typeof day.suspended === "number"
+          ? day.suspended
+          : isTruthyFlag(day.suspended)
+            ? 1
+            : 0;
+      return {
+        repeats: repeats as string | number,
+        suspended,
+        items,
+      };
+    });
+  }
+
+  private async writeWeeklyFeedDailyList(feedDailyList: unknown[]) {
+    const { domain, action, deviceId } = this.getWeeklyWriteContext();
+    await this.hass.callService(domain, action, {
+      device_id: deviceId,
+      feed_daily_list: feedDailyList,
+    });
+  }
+
+  private async editWeeklyEntry(entry: EditScheduleEntry): Promise<void> {
+    const decoded = entry.key === null ? null : decodeWeeklyKey(entry.key);
+    if (!decoded || decoded.itemIndex === null) {
+      throw new Error(
+        "Cannot edit this weekly entry: source structure is not items-shaped"
+      );
+    }
+
+    const { rawList } = this.getWeeklyWriteContext();
     const { dayIndex, itemIndex } = decoded;
     const sourceDay = rawList[dayIndex];
     if (!sourceDay || typeof sourceDay !== "object") {
@@ -594,76 +675,79 @@ export default class CustomDevice extends Device<CustomDeviceConfig> {
     }
     const newTime = entry.hour * 3600 + entry.minute * 60;
 
-    const feedDailyList = rawList.map((rawDay, dIdx) => {
-      const day = (rawDay ?? {}) as Record<string, unknown>;
-      const dayItems = Array.isArray(day.items) ? day.items : [];
-      const items = dayItems.map((rawItem, iIdx) => {
-        const item = (rawItem ?? {}) as Record<string, unknown>;
-        const baseAmount =
-          typeof item.amount === "number"
-            ? item.amount
-            : parseInt(String(item.amount ?? 0), 10) || 0;
-        const baseAmount1 =
-          typeof item.amount1 === "number"
-            ? item.amount1
-            : parseInt(String(item.amount1 ?? 0), 10) || 0;
-        const baseAmount2 =
-          typeof item.amount2 === "number"
-            ? item.amount2
-            : parseInt(String(item.amount2 ?? 0), 10) || 0;
-        const baseTime =
-          typeof item.time === "number"
-            ? item.time
-            : parseInt(String(item.time ?? 0), 10) || 0;
-        const baseName =
-          typeof item.name === "string" ? item.name : String(item.name ?? "");
-
-        if (dIdx === dayIndex && iIdx === itemIndex) {
+    const feedDailyList = this.serializeWeeklyFeedDailyList(
+      rawList,
+      (item, ctx) => {
+        if (ctx.dayIndex === dayIndex && ctx.itemIndex === itemIndex) {
           return {
+            ...item,
             time: newTime,
-            name: baseName,
             amount,
-            amount1: baseAmount1,
-            amount2: baseAmount2,
           };
         }
-        return {
-          time: baseTime,
-          name: baseName,
-          amount: baseAmount,
-          amount1: baseAmount1,
-          amount2: baseAmount2,
-        };
-      });
+        return item;
+      }
+    );
 
-      const repeats = day.repeats;
-      const suspended =
-        typeof day.suspended === "number"
-          ? day.suspended
-          : isTruthyFlag(day.suspended)
-            ? 1
-            : 0;
-      // Re-emit only known fields. The integration's schema rejects
-      // unknown keys (e.g. `count`, `id`) on the way in.
-      return {
-        repeats: repeats as string | number,
-        suspended,
-        items,
-      };
-    });
-
-    await this.hass.callService(domain, action, {
-      device_id: deviceId,
-      feed_daily_list: feedDailyList,
-    });
+    await this.writeWeeklyFeedDailyList(feedDailyList);
   }
 
   async removeEntry(entry: ScheduleEntry): Promise<void> {
-    await this.callAction("remove", { id: parseInt(entry.key) });
+    if (!this.capabilities.hasWeeklySchedule) {
+      await this.callAction("remove", { id: parseInt(entry.key) });
+      return;
+    }
+    const decoded = decodeWeeklyKey(entry.key);
+    if (!decoded || decoded.itemIndex === null) {
+      throw new Error(
+        "Cannot remove this weekly entry: source structure is not items-shaped"
+      );
+    }
+    const { rawList } = this.getWeeklyWriteContext();
+    const feedDailyList = this.serializeWeeklyFeedDailyList(
+      rawList,
+      (item, ctx) => {
+        if (
+          ctx.dayIndex === decoded.dayIndex &&
+          ctx.itemIndex === decoded.itemIndex
+        ) {
+          return null;
+        }
+        return item;
+      }
+    );
+    await this.writeWeeklyFeedDailyList(feedDailyList);
   }
 
   async toggleEntry(entry: ScheduleEntry): Promise<void> {
-    await this.callAction("toggle", { id: parseInt(entry.key) });
+    if (!this.capabilities.hasWeeklySchedule) {
+      await this.callAction("toggle", { id: parseInt(entry.key) });
+      return;
+    }
+    const decoded = decodeWeeklyKey(entry.key);
+    if (!decoded || decoded.itemIndex === null) {
+      throw new Error(
+        "Cannot toggle this weekly entry: source structure is not items-shaped"
+      );
+    }
+    const { rawList } = this.getWeeklyWriteContext();
+    const feedDailyList = this.serializeWeeklyFeedDailyList(
+      rawList,
+      (item, ctx) => {
+        if (
+          ctx.dayIndex === decoded.dayIndex &&
+          ctx.itemIndex === decoded.itemIndex
+        ) {
+          const next = isTruthyFlag(item.suspended ?? item.disabled) ? 0 : 1;
+          return {
+            ...item,
+            suspended: next,
+          };
+        }
+        return item;
+      }
+    );
+    await this.writeWeeklyFeedDailyList(feedDailyList);
   }
 
   async setGlobalToggle(enabled: boolean): Promise<void> {

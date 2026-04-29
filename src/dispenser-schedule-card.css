@@ -21,6 +21,53 @@
   justify-content: space-between;
 }
 
+.custom-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.custom-header-row__left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.custom-header-row__icon {
+  color: var(--state-icon-color, var(--paper-item-icon-color));
+  --mdc-icon-size: 24px;
+  flex: 0 0 auto;
+}
+
+.custom-header-row__title {
+  font-size: var(--ha-font-size-xl, 20px);
+  font-weight: 600;
+  color: var(--primary-text-color);
+  line-height: 1.2;
+}
+
+.custom-header-row__right {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.header-text-button {
+  border: 0;
+  background: transparent;
+  color: var(--primary-color);
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 4px 0;
+  cursor: pointer;
+}
+
 .edit-menu {
   margin-top: -8px;
   margin-bottom: -8px;
