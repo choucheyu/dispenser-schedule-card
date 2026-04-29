@@ -96,6 +96,11 @@ ha-time-input {
   line-height: var(--ha-line-height-condensed, 16px);
 }
 
+.edit-field-static {
+  color: var(--primary-text-color);
+  padding: 4px 0;
+}
+
 .weekday-select {
   display: block;
 }

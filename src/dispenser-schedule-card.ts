@@ -875,7 +875,11 @@ class DispenserScheduleCard extends LitElement {
         ${this._device.capabilities.hasWeeklySchedule
           ? html`<div class="edit-field">
               <label class="edit-field-label">${repeatFieldLabel}</label>
-              ${this.renderWeekdaySelect(entry)}
+              ${this._device.capabilities.canEditWeekdays
+                ? this.renderWeekdaySelect(entry)
+                : html`<div class="edit-field-static">
+                    ${this.editWeekdaysSummary(entry)}
+                  </div>`}
             </div>`
           : nothing}
       `;

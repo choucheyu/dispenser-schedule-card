@@ -39,9 +39,24 @@ export interface CustomDeviceConfig {
    * raw `state` regex parsing is skipped. Set to `null` to disable.
    */
   weekly_attribute?: string | null;
+  /**
+   * Opt-in service for editing a weekly entry, in `domain.action` form
+   * (e.g. `petkit.set_feeding_schedule`). The service is expected to
+   * accept a `device_id` plus the full `feed_daily_list` and replace
+   * the schedule wholesale; the card reads the live attribute, mutates
+   * a single item's time/amount, and writes the rest back unchanged.
+   * Without this, the weekly path stays read-only.
+   */
+  weekly_edit_service?: string;
+  /**
+   * Name of the entity attribute holding the numeric backend device id
+   * required by `weekly_edit_service`. Defaults to "device_id".
+   */
+  weekly_device_id_attribute?: string;
 }
 
 const DEFAULT_WEEKLY_ATTRIBUTE = "feed_daily_list";
+const DEFAULT_WEEKLY_DEVICE_ID_ATTRIBUTE = "device_id";
 
 /**
  * Best-effort coercion of a `repeats` field into ISO weekdays (Mon=1..Sun=7).
@@ -155,6 +170,38 @@ interface ParsedWeeklyEntry {
   weekdays: readonly Weekday[] | undefined;
   suspended: boolean;
   name?: string;
+  /**
+   * Index of the source day-plan entry inside the raw `feed_daily_list`,
+   * captured at parse time so write-back can locate the exact item.
+   */
+  dayIndex: number;
+  /**
+   * Index inside the day-plan's `items` array, or null when the source
+   * entry was a flat (non-items) shape. Null entries cannot be edited
+   * via the items-shape write path.
+   */
+  itemIndex: number | null;
+}
+
+const WEEKLY_KEY_FLAT_MARKER = "-";
+
+function encodeWeeklyKey(dayIndex: number, itemIndex: number | null): string {
+  return `${dayIndex}:${itemIndex === null ? WEEKLY_KEY_FLAT_MARKER : itemIndex}`;
+}
+
+function decodeWeeklyKey(
+  key: string
+): { dayIndex: number; itemIndex: number | null } | null {
+  const parts = key.split(":");
+  if (parts.length !== 2) return null;
+  const dayIndex = parseInt(parts[0], 10);
+  if (!Number.isFinite(dayIndex) || dayIndex < 0) return null;
+  if (parts[1] === WEEKLY_KEY_FLAT_MARKER) {
+    return { dayIndex, itemIndex: null };
+  }
+  const itemIndex = parseInt(parts[1], 10);
+  if (!Number.isFinite(itemIndex) || itemIndex < 0) return null;
+  return { dayIndex, itemIndex };
 }
 
 /**
@@ -170,10 +217,11 @@ function parseFeedDailyList(value: unknown): ParsedWeeklyEntry[] | null {
   if (!Array.isArray(value) || value.length === 0) return null;
 
   const out: ParsedWeeklyEntry[] = [];
-  let autoId = 0;
 
   const consumeItem = (
     item: Record<string, unknown>,
+    dayIndex: number,
+    itemIndex: number | null,
     parent?: Record<string, unknown>
   ): void => {
     const time = parseTime(
@@ -195,13 +243,6 @@ function parseFeedDailyList(value: unknown): ParsedWeeklyEntry[] | null {
       item.suspended ?? parent?.suspended ?? item.disabled ?? parent?.disabled
     );
 
-    const explicitId = item.id ?? item.key ?? item.plan_id;
-    const key =
-      explicitId !== undefined && explicitId !== null
-        ? String(explicitId)
-        : `w${autoId}`;
-    autoId++;
-
     const name =
       typeof item.name === "string"
         ? item.name
@@ -212,30 +253,37 @@ function parseFeedDailyList(value: unknown): ParsedWeeklyEntry[] | null {
             : undefined;
 
     out.push({
-      key,
+      key: encodeWeeklyKey(dayIndex, itemIndex),
       hour: time.hour,
       minute: time.minute,
       amount,
       weekdays,
       suspended,
       name,
+      dayIndex,
+      itemIndex,
     });
   };
 
-  for (const raw of value) {
-    if (!raw || typeof raw !== "object") continue;
+  value.forEach((raw, dayIndex) => {
+    if (!raw || typeof raw !== "object") return;
     const obj = raw as Record<string, unknown>;
     const items = obj.items ?? obj.feeds ?? obj.entries;
     if (Array.isArray(items) && items.length > 0) {
-      for (const child of items) {
+      items.forEach((child, itemIndex) => {
         if (child && typeof child === "object") {
-          consumeItem(child as Record<string, unknown>, obj);
+          consumeItem(
+            child as Record<string, unknown>,
+            dayIndex,
+            itemIndex,
+            obj
+          );
         }
-      }
+      });
     } else {
-      consumeItem(obj);
+      consumeItem(obj, dayIndex, null);
     }
-  }
+  });
 
   return out.length > 0 ? out : null;
 }
@@ -302,7 +350,8 @@ export default class CustomDevice extends Device<CustomDeviceConfig> {
         hasGlobalToggle: !!this.deviceConfig.switch,
         canAddEntries: false,
         canRemoveEntries: false,
-        canEditEntries: false,
+        canEditEntries: !!this.deviceConfig.weekly_edit_service,
+        canEditWeekdays: false,
         maxEntries: this.deviceConfig.max_entries,
         hasWeeklySchedule: true,
       };
@@ -313,6 +362,7 @@ export default class CustomDevice extends Device<CustomDeviceConfig> {
       canAddEntries: !!actions?.add,
       canRemoveEntries: !!actions?.remove,
       canEditEntries: !!actions?.edit,
+      canEditWeekdays: true,
       maxEntries: this.deviceConfig.max_entries,
       hasWeeklySchedule: false,
     };
@@ -459,12 +509,152 @@ export default class CustomDevice extends Device<CustomDeviceConfig> {
 
   async editEntry(entry: EditScheduleEntry): Promise<void> {
     if (entry.key === null) return;
+    if (this.capabilities.hasWeeklySchedule) {
+      await this.editWeeklyEntry(entry);
+      return;
+    }
     const amountKey = this.getAmountKey("edit");
     await this.callAction("edit", {
       id: parseInt(entry.key),
       hour: entry.hour,
       minute: entry.minute,
       [amountKey]: entry.values[0],
+    });
+  }
+
+  /**
+   * Single-entry weekly edit MVP: read the live `feed_daily_list`,
+   * mutate only the targeted item's time and amount, and write the
+   * full structure back via the configured `weekly_edit_service`.
+   * All other days, items, repeats and suspended flags round-trip
+   * unchanged so the broader weekly plan stays intact.
+   */
+  private async editWeeklyEntry(entry: EditScheduleEntry): Promise<void> {
+    const serviceStr = this.deviceConfig.weekly_edit_service;
+    if (!serviceStr) {
+      throw new Error("weekly_edit_service is not configured");
+    }
+    const [domain, action] = serviceStr.split(".");
+    if (!domain || !action) {
+      throw new Error(
+        `Invalid weekly_edit_service "${serviceStr}"; expected "domain.action"`
+      );
+    }
+
+    const decoded = entry.key === null ? null : decodeWeeklyKey(entry.key);
+    if (!decoded || decoded.itemIndex === null) {
+      throw new Error(
+        "Cannot edit this weekly entry: source structure is not items-shaped"
+      );
+    }
+
+    const attrName = this.getWeeklyAttributeName();
+    if (!attrName) {
+      throw new Error("Weekly attribute is disabled for this device");
+    }
+    const entityState = this.hass.states[this.deviceConfig.entity];
+    const rawList = entityState?.attributes?.[attrName];
+    if (!Array.isArray(rawList)) {
+      throw new Error(
+        `Entity attribute "${attrName}" is missing or not a list`
+      );
+    }
+
+    const deviceIdAttr =
+      this.deviceConfig.weekly_device_id_attribute ??
+      DEFAULT_WEEKLY_DEVICE_ID_ATTRIBUTE;
+    const rawDeviceId = entityState?.attributes?.[deviceIdAttr];
+    const deviceId =
+      typeof rawDeviceId === "number"
+        ? rawDeviceId
+        : parseInt(String(rawDeviceId ?? ""), 10);
+    if (!Number.isFinite(deviceId)) {
+      throw new Error(
+        `Entity attribute "${deviceIdAttr}" is missing or not numeric`
+      );
+    }
+
+    const { dayIndex, itemIndex } = decoded;
+    const sourceDay = rawList[dayIndex];
+    if (!sourceDay || typeof sourceDay !== "object") {
+      throw new Error(
+        `Weekly day index ${dayIndex} no longer exists in the source plan`
+      );
+    }
+    const sourceItems = (sourceDay as Record<string, unknown>).items;
+    if (!Array.isArray(sourceItems) || !sourceItems[itemIndex]) {
+      throw new Error(
+        `Weekly item index ${itemIndex} no longer exists in day ${dayIndex}`
+      );
+    }
+
+    const amount = entry.values[0];
+    if (!Number.isFinite(amount)) {
+      throw new Error("Edit amount is not a finite number");
+    }
+    const newTime = entry.hour * 3600 + entry.minute * 60;
+
+    const feedDailyList = rawList.map((rawDay, dIdx) => {
+      const day = (rawDay ?? {}) as Record<string, unknown>;
+      const dayItems = Array.isArray(day.items) ? day.items : [];
+      const items = dayItems.map((rawItem, iIdx) => {
+        const item = (rawItem ?? {}) as Record<string, unknown>;
+        const baseAmount =
+          typeof item.amount === "number"
+            ? item.amount
+            : parseInt(String(item.amount ?? 0), 10) || 0;
+        const baseAmount1 =
+          typeof item.amount1 === "number"
+            ? item.amount1
+            : parseInt(String(item.amount1 ?? 0), 10) || 0;
+        const baseAmount2 =
+          typeof item.amount2 === "number"
+            ? item.amount2
+            : parseInt(String(item.amount2 ?? 0), 10) || 0;
+        const baseTime =
+          typeof item.time === "number"
+            ? item.time
+            : parseInt(String(item.time ?? 0), 10) || 0;
+        const baseName =
+          typeof item.name === "string" ? item.name : String(item.name ?? "");
+
+        if (dIdx === dayIndex && iIdx === itemIndex) {
+          return {
+            time: newTime,
+            name: baseName,
+            amount,
+            amount1: baseAmount1,
+            amount2: baseAmount2,
+          };
+        }
+        return {
+          time: baseTime,
+          name: baseName,
+          amount: baseAmount,
+          amount1: baseAmount1,
+          amount2: baseAmount2,
+        };
+      });
+
+      const repeats = day.repeats;
+      const suspended =
+        typeof day.suspended === "number"
+          ? day.suspended
+          : isTruthyFlag(day.suspended)
+            ? 1
+            : 0;
+      // Re-emit only known fields. The integration's schema rejects
+      // unknown keys (e.g. `count`, `id`) on the way in.
+      return {
+        repeats: repeats as string | number,
+        suspended,
+        items,
+      };
+    });
+
+    await this.hass.callService(domain, action, {
+      device_id: deviceId,
+      feed_daily_list: feedDailyList,
     });
   }
 

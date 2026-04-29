@@ -84,6 +84,13 @@ export interface DeviceCapabilities {
   canAddEntries: boolean;
   canRemoveEntries: boolean;
   canEditEntries: boolean;
+  /**
+   * Whether the device's edit form should expose a weekday-repeat editor.
+   * Devices that round-trip a structured weekly plan but only safely
+   * support per-entry time/amount edits set this to false so that the
+   * weekly grouping (`repeats`) is preserved verbatim on write-back.
+   */
+  canEditWeekdays: boolean;
   maxEntries: number;
   hasWeeklySchedule: boolean;
 }
